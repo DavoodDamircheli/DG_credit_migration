@@ -48,9 +48,10 @@ Thumbs.db
 *.npz
 *.npy
 output/
-results/
 figures/
 logs/
+results/**
+!results/**/.gitkeep
 
 # Misc
 *.log

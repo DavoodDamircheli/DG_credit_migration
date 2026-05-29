@@ -1,0 +1,12 @@
+domain: [-2.0, 2.0]
+T: 1.0
+r: 0.05
+sigma_H: 0.4
+sigma_L: 0.1
+eps: 0.05
+Psi: constant_0.5
+poly_degree: 2
+penalty_C: 10
+bc_type: nitsche
+dt: 0.005
+N_elements: 80
