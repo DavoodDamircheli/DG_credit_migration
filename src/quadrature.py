@@ -1,9 +1,13 @@
 import numpy as np
+from functools import lru_cache
 
 
+@lru_cache(maxsize=32)
 def gauss_legendre_ref(n_points):
-    """Gauss-Legendre nodes and weights on [-1, 1]."""
+    """Gauss-Legendre nodes and weights on [-1, 1] (cached per n_points)."""
     xi, w = np.polynomial.legendre.leggauss(n_points)
+    xi.flags.writeable = False
+    w.flags.writeable  = False
     return xi, w
 
 
