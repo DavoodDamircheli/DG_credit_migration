@@ -81,7 +81,7 @@ class BackwardEulerSolver:
               beta_func=None, gamma_func=None, r=0.0,
               Psi_func=None, Psi_x_func=None,
               sigma_H=None, sigma_L=None, eps=None,
-              diagnostics=None):
+              diagnostics=None, reassemble_every=1):
         """Backward Euler time stepper, dispatching between two paths.
 
         Old path (Psi_func is None): pure-diffusion heat equation with
@@ -90,6 +90,12 @@ class BackwardEulerSolver:
         Frozen-coefficient path (Psi_func provided): full regularized PDE.
         At each step the stiffness is re-assembled from U^{n-1} using the
         regularized coefficients a_ε, β_ε, γ_w.
+
+        reassemble_every : int (default 1)
+            Reassemble the stiffness matrix only every this many steps.
+            Use values > 1 when the PDE coefficients change slowly (e.g.
+            the state stays far from the free boundary) to reduce cost.
+            reassemble_every=1 gives full Picard accuracy at every step.
 
         Returns [(0.0, U^0), (T, U^T)].
         """
@@ -101,7 +107,8 @@ class BackwardEulerSolver:
                                   Psi_x_func if Psi_x_func is not None
                                   else (lambda x, t: np.zeros_like(np.asarray(x, float))),
                                   sigma_H, sigma_L, eps,
-                                  diagnostics=diagnostics)
+                                  diagnostics=diagnostics,
+                                  reassemble_every=reassemble_every)
 
     # ------------------------------------------------------------------ #
     # Heat-equation (linear, frozen a) path                               #
@@ -200,12 +207,13 @@ class BackwardEulerSolver:
 
     def _solve_frozen(self, u0_func, f_func, g_D_func, T, dt,
                       r, Psi_func, Psi_x_func, sigma_H, sigma_L, eps,
-                      diagnostics=None):
+                      diagnostics=None, reassemble_every=1):
         """Frozen-state backward Euler for the regularized nonlinear PDE.
 
         At each step the three coefficient callables a_w, beta_w, gamma_w
         are built from the frozen state U^{n-1} and passed to
-        assemble_stiffness.  The LU factorization is recomputed each step.
+        assemble_stiffness.  The LU factorization is recomputed every
+        reassemble_every steps (default: 1 = every step).
         """
         from .coefficients import (a_eps as _a_eps, beta_eps as _beta_eps,
                                    gamma_eps_elementwise)
@@ -251,54 +259,57 @@ class BackwardEulerSolver:
 
         n_steps = int(round(T / dt))
 
+        # Cached stiffness (rebuilt every reassemble_every steps)
+        K_stiff = None; A_lu = None
+        a_w_c = beta_w_c = gamma_w_c = None   # cached callables
+        coeff_bc_L = coeff_bc_R = None
+
         for step in range(n_steps):
             t_n    = (step + 1) * dt
             U_prev = U.copy()
 
-            # Build frozen callables that capture U_prev and t_n by value
-            # via default-argument binding to avoid late-binding closure pitfalls.
-            def a_w(x_in, _U=U_prev, _t=t_n):
-                x = np.asarray(x_in, dtype=float).ravel()
-                w = _eval_dg_solution(mesh, basis, _U, x)
-                return _a_eps(w, x, _t, Psi_func, sigma_H, sigma_L, eps)
+            if K_stiff is None or (step % reassemble_every == 0):
+                # Build frozen callables that capture U_prev and t_n by value.
+                def a_w(x_in, _U=U_prev, _t=t_n):
+                    x = np.asarray(x_in, dtype=float).ravel()
+                    w = _eval_dg_solution(mesh, basis, _U, x)
+                    return _a_eps(w, x, _t, Psi_func, sigma_H, sigma_L, eps)
 
-            def beta_w(x_in, _U=U_prev, _t=t_n):
-                x  = np.asarray(x_in, dtype=float).ravel()
-                w  = _eval_dg_solution(mesh, basis, _U, x)
-                wx = _eval_dg_gradient(mesh, basis, _U, x)
-                Px = np.asarray(Psi_x_func(x, _t), dtype=float)
-                return _beta_eps(w, wx, Px, x, _t, r, Psi_func,
-                                 sigma_H, sigma_L, eps)
+                def beta_w(x_in, _U=U_prev, _t=t_n):
+                    x  = np.asarray(x_in, dtype=float).ravel()
+                    w  = _eval_dg_solution(mesh, basis, _U, x)
+                    wx = _eval_dg_gradient(mesh, basis, _U, x)
+                    Px = np.asarray(Psi_x_func(x, _t), dtype=float)
+                    return _beta_eps(w, wx, Px, x, _t, r, Psi_func,
+                                     sigma_H, sigma_L, eps)
 
-            def gamma_w(x_in, _U=U_prev, _t=t_n):
-                x  = np.asarray(x_in, dtype=float).ravel()
-                # assemble_upwind_drift calls gamma_func once per element
-                # with that element's quadrature points — all x values here
-                # belong to the same element, so x[0] identifies K.
-                K  = int(np.clip(np.searchsorted(mesh.x[1:], x[0]), 0, N - 1))
-                w  = _eval_dg_solution(mesh, basis, _U, x)
-                wx = _eval_dg_gradient(mesh, basis, _U, x)
-                return gamma_eps_elementwise(w, wx, x, _t, mesh, basis, K, r,
-                                             Psi_func, Psi_x_func,
-                                             sigma_H, sigma_L, eps)
+                def gamma_w(x_in, _U=U_prev, _t=t_n):
+                    x  = np.asarray(x_in, dtype=float).ravel()
+                    K  = int(np.clip(np.searchsorted(mesh.x[1:], x[0]), 0, N - 1))
+                    w  = _eval_dg_solution(mesh, basis, _U, x)
+                    wx = _eval_dg_gradient(mesh, basis, _U, x)
+                    return gamma_eps_elementwise(w, wx, x, _t, mesh, basis, K, r,
+                                                 Psi_func, Psi_x_func,
+                                                 sigma_H, sigma_L, eps)
 
-            # Assemble full stiffness from frozen callables and factor
-            K_stiff = assemble_stiffness(mesh, basis, a_w, beta_w, gamma_w,
-                                          r, eta_C, p, t_n)
-            A_lu = splu((M + dt * K_stiff).tocsc())
+                a_w_c = a_w; beta_w_c = beta_w; gamma_w_c = gamma_w
+
+                K_stiff = assemble_stiffness(mesh, basis, a_w_c, beta_w_c, gamma_w_c,
+                                              r, eta_C, p, t_n)
+                A_lu = splu((M + dt * K_stiff).tocsc())
+
+                # Nitsche BC coefficients from the freshly frozen a_w_c
+                a_bc_L = float(a_w_c(np.array([x_bc_L]))[0])
+                a_bc_R = float(a_w_c(np.array([x_bc_R]))[0])
+                pen_L  = eta * a_bc_L / h_bc_L
+                pen_R  = eta * a_bc_R / h_bc_R
+                coeff_bc_L = -(a_bc_L * dphi_m1 + pen_L * phi_m1)
+                coeff_bc_R =  a_bc_R * dphi_p1 - pen_R * phi_p1
 
             # ── Load vector ────────────────────────────────────────────
             f_all = np.asarray(f_func(x_phys, t_n), dtype=float)
             F = (J_K_arr[:, None]
                  * np.einsum('q,Kq,qi->Ki', w_q, f_all, phi_q)).ravel()
-
-            # Nitsche diffusion BC: a_bc changes each step via frozen state
-            a_bc_L = float(a_w(np.array([x_bc_L]))[0])
-            a_bc_R = float(a_w(np.array([x_bc_R]))[0])
-            pen_L  = eta * a_bc_L / h_bc_L
-            pen_R  = eta * a_bc_R / h_bc_R
-            coeff_bc_L = -(a_bc_L * dphi_m1 + pen_L * phi_m1)
-            coeff_bc_R =  a_bc_R * dphi_p1 - pen_R * phi_p1
 
             g_L = float(g_D_func(x_bc_L, t_n))
             g_R = float(g_D_func(x_bc_R, t_n))
@@ -307,8 +318,8 @@ class BackwardEulerSolver:
             if g_R:
                 F[-n_loc:] += coeff_bc_R * g_R
 
-            # Upwind drift inflow BC (beta_w evaluated at frozen state)
-            F += assemble_drift_inflow_bc(mesh, basis, beta_w, g_D_func, t_n)
+            # Upwind drift inflow BC (beta_w_c evaluated at cached frozen state)
+            F += assemble_drift_inflow_bc(mesh, basis, beta_w_c, g_D_func, t_n)
 
             U = A_lu.solve(M @ U_prev + dt * F)
 

@@ -11,9 +11,16 @@ class DiagnosticsRecorder:
     residual_norm and coeff_change when the caller supplies the needed data.
     """
 
-    def __init__(self):
+    def __init__(self, coeff_func=None):
+        """
+        coeff_func : optional callable (U, mesh, basis, t) → 1-D array
+            Returns a_ε values at all quadrature points given the DG solution U.
+            When provided, coeff_change is the L^∞ change in a_ε between
+            consecutive steps.
+        """
         self.records = []
-        self._U_prev_stored = None   # fallback U^{n-1} when not passed explicitly
+        self._U_prev_stored = None
+        self._coeff_func = coeff_func
 
     def record_step(self, n, t, U, mesh, basis, u_ex=None,
                     U_prev=None, dt=None, M=None, K=None, F=None,
@@ -51,11 +58,11 @@ class DiagnosticsRecorder:
             record['L2_norm'] = float(np.sqrt(np.dot(U, M @ U)))
         else:
             L2_sq = 0.0
-            for K in range(N_elem):
-                x_L, x_R = mesh.element_interval(K)
+            for Ke in range(N_elem):
+                x_L, x_R = mesh.element_interval(Ke)
                 h_K = x_R - x_L
                 J   = h_K / 2.0
-                u_h = phi_q @ U[K * n_loc:(K + 1) * n_loc]
+                u_h = phi_q @ U[Ke * n_loc:(Ke + 1) * n_loc]
                 L2_sq += J * np.dot(w_q, u_h ** 2)
             record['L2_norm'] = float(np.sqrt(L2_sq))
 
@@ -63,11 +70,11 @@ class DiagnosticsRecorder:
         phi_m1 = basis.phi(np.array([-1.0]))[0]
         phi_p1 = basis.phi(np.array([ 1.0]))[0]
         energy = 0.0
-        for K in range(N_elem):
-            x_L, x_R = mesh.element_interval(K)
+        for Ke in range(N_elem):
+            x_L, x_R = mesh.element_interval(Ke)
             h_K = x_R - x_L
             J   = h_K / 2.0
-            du_h = (2.0 / h_K) * (dphi_q @ U[K * n_loc:(K + 1) * n_loc])
+            du_h = (2.0 / h_K) * (dphi_q @ U[Ke * n_loc:(Ke + 1) * n_loc])
             energy += J * np.dot(w_q, du_h ** 2)
         for e_idx in range(len(mesh.interior_face_indices)):
             K_L = mesh.face_left_element[e_idx]
@@ -92,34 +99,22 @@ class DiagnosticsRecorder:
             record['residual_norm'] = float('nan')
 
         # ── coeff_change: ‖a_ε(U^n,·) - a_ε(U^{n-1},·)‖_{L^∞} ──────
-        if a_func is not None and U_p is not None:
-            # Evaluate a_func (which was built from U_prev) and compare with
-            # a_func built from U on the same global quadrature grid.
-            # We approximate by evaluating a_func on the full x_phys grid.
-            x_L_arr = mesh.x[:-1]; x_R_arr = mesh.x[1:]
-            h_K_arr = x_R_arr - x_L_arr
-            x_phys_all = (0.5 * (x_L_arr[:, None] + x_R_arr[:, None])
-                          + 0.5 * h_K_arr[:, None] * xi_q[None, :]).ravel()
-            # a_func is the frozen callable for this step: a_eps evaluated at U_prev
-            a_prev_vals = np.asarray(a_func(x_phys_all), dtype=float)
-            # Evaluate a_func re-using the same physical structure but at U^n.
-            # Since a_func captures U_prev internally, we reconstruct a_eps(U^n)
-            # by calling the a_func with U but re-evaluating through the DG solution.
-            # Note: we use the same Psi/sigma params implicitly via the callable.
-            # We approximate coeff_change as the change in a at the quadrature points.
-            record['coeff_change'] = float('nan')   # placeholder; see note below
+        if self._coeff_func is not None and U_p is not None:
+            a_curr = np.asarray(self._coeff_func(U,   mesh, basis, t),  float)
+            a_prev = np.asarray(self._coeff_func(U_p, mesh, basis, t),  float)
+            record['coeff_change'] = float(np.max(np.abs(a_curr - a_prev)))
         else:
             record['coeff_change'] = float('nan')
 
         # ── L2_error ───────────────────────────────────────────────────
         if u_ex is not None:
             L2_err_sq = 0.0
-            for K in range(N_elem):
-                x_L, x_R = mesh.element_interval(K)
+            for Ke in range(N_elem):
+                x_L, x_R = mesh.element_interval(Ke)
                 h_K = x_R - x_L
                 J   = h_K / 2.0
                 x_pts = 0.5 * (x_L + x_R) + 0.5 * h_K * xi_q
-                u_h = phi_q @ U[K * n_loc:(K + 1) * n_loc]
+                u_h = phi_q @ U[Ke * n_loc:(Ke + 1) * n_loc]
                 u_e = np.asarray(u_ex(x_pts, t), dtype=float)
                 L2_err_sq += J * np.dot(w_q, (u_e - u_h) ** 2)
             record['L2_error'] = float(np.sqrt(L2_err_sq))

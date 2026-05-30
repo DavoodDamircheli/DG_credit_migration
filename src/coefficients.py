@@ -15,7 +15,8 @@ def H_eps(s, eps):
 def dH_eps(s, eps):
     """H_ε'(s) = sech²(s/eps) / (2*eps)."""
     s = np.asarray(s, dtype=float)
-    s_safe = np.clip(s / eps, -500.0, 500.0)
+    # clip at 300 so cosh²(s_safe) < 10^261, safely within float64 range
+    s_safe = np.clip(s / eps, -300.0, 300.0)
     c = np.cosh(s_safe)
     return 0.5 / (eps * c * c)
 
@@ -23,7 +24,7 @@ def dH_eps(s, eps):
 def d2H_eps(s, eps):
     """H_ε''(s) = -tanh(s/eps) * sech²(s/eps) / eps²."""
     s = np.asarray(s, dtype=float)
-    s_safe = np.clip(s / eps, -500.0, 500.0)
+    s_safe = np.clip(s / eps, -300.0, 300.0)
     t = np.tanh(s_safe)
     c = np.cosh(s_safe)
     return -t / (eps * eps * c * c)
