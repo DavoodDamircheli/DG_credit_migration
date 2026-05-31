@@ -81,7 +81,7 @@ class BackwardEulerSolver:
               beta_func=None, gamma_func=None, r=0.0,
               Psi_func=None, Psi_x_func=None,
               sigma_H=None, sigma_L=None, eps=None,
-              diagnostics=None, reassemble_every=1):
+              diagnostics=None, reassemble_every=1, on_step=None):
         """Backward Euler time stepper, dispatching between two paths.
 
         Old path (Psi_func is None): pure-diffusion heat equation with
@@ -97,25 +97,31 @@ class BackwardEulerSolver:
             the state stays far from the free boundary) to reduce cost.
             reassemble_every=1 gives full Picard accuracy at every step.
 
+        on_step : callable(step, t, U) or None
+            Called after each step with the 1-indexed step number, physical
+            time t, and the current DOF vector U.
+
         Returns [(0.0, U^0), (T, U^T)].
         """
         if Psi_func is None:
             return self._solve_linear(u0_func, f_func, a_func, g_D_func,
-                                      T, dt, diagnostics=diagnostics)
+                                      T, dt, diagnostics=diagnostics,
+                                      on_step=on_step)
         return self._solve_frozen(u0_func, f_func, g_D_func, T, dt,
                                   r, Psi_func,
                                   Psi_x_func if Psi_x_func is not None
                                   else (lambda x, t: np.zeros_like(np.asarray(x, float))),
                                   sigma_H, sigma_L, eps,
                                   diagnostics=diagnostics,
-                                  reassemble_every=reassemble_every)
+                                  reassemble_every=reassemble_every,
+                                  on_step=on_step)
 
     # ------------------------------------------------------------------ #
     # Heat-equation (linear, frozen a) path                               #
     # ------------------------------------------------------------------ #
 
     def _solve_linear(self, u0_func, f_func, a_func, g_D_func, T, dt,
-                      diagnostics=None):
+                      diagnostics=None, on_step=None):
         """Frozen-coefficient backward Euler for the heat equation.
 
         Solves (M + dt K_diff) U^n = M U^{n-1} + dt F^n at each step.
@@ -199,6 +205,9 @@ class BackwardEulerSolver:
                                         U_prev=U0 if n == 0 else None,
                                         M=M, dt=dt)
 
+            if on_step is not None:
+                on_step(n + 1, t_new, U)
+
         return [(0.0, U0), (T, U.copy())]
 
     # ------------------------------------------------------------------ #
@@ -207,7 +216,7 @@ class BackwardEulerSolver:
 
     def _solve_frozen(self, u0_func, f_func, g_D_func, T, dt,
                       r, Psi_func, Psi_x_func, sigma_H, sigma_L, eps,
-                      diagnostics=None, reassemble_every=1):
+                      diagnostics=None, reassemble_every=1, on_step=None):
         """Frozen-state backward Euler for the regularized nonlinear PDE.
 
         At each step the three coefficient callables a_w, beta_w, gamma_w
@@ -327,5 +336,8 @@ class BackwardEulerSolver:
                 diagnostics.record_step(step + 1, t_n, U, mesh, basis,
                                         U_prev=U_prev, dt=dt, M=M,
                                         K=K_stiff, F=F)
+
+            if on_step is not None:
+                on_step(step + 1, t_n, U)
 
         return [(0.0, U0), (T, U.copy())]
