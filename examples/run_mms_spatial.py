@@ -295,7 +295,9 @@ def _phase5_main(config_path):
     print("=" * 72)
 
     h3 = L / 128
-    EPS_LIST3 = [0.1, 0.05, 0.02, 0.01]
+    # Chosen so h/ε ≤ 0.5 at N=128 on [-2, 2] (h = 0.03125):
+    # h/ε must be ≤ 0.5  →  ε ≥ h/0.5 = 0.0625.  All values below qualify.
+    EPS_LIST3 = [0.5, 0.2, 0.1, 0.07]
     print(f"\n  {'eps':>6}  {'h/eps':>8}  {'E_L2':>12}  {'E_DG':>12}"
           f"  {'coeff_chg_max':>14}  flag")
     t3_rows = []
